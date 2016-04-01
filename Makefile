@@ -13,6 +13,12 @@ CC ?= gcc
 CFLAGS = -std=gnu99 -Wall -O2 -g -I .
 LDFLAGS = -lpthread
 
+ifeq ($(strip $(PROFILE)), 1)
+PROF_FLAGS = -pg
+CFLAGS += $(PROF_FLAGS)
+LDFLAGS += $(PROF_FLAGS)
+endif
+
 OBJS := \
 	async.o \
 	reactor.o \
@@ -33,6 +39,9 @@ $(OUT)/%.o: %.c
 
 $(OUT):
 	@mkdir -p $@
+
+ab-test:
+	@ab -c 32 -n 100 http://localhost:8080/
 
 doc:
 	@doxygen
