@@ -24,7 +24,7 @@ int main(void)
     fprintf(stderr, "# Test buffer\n");
 
     /* simple check buffer */
-    void *buf = Buffer.new(0);
+    void *buf = Buffer.create(0);
     char strA[12] = "hello world\n";
     char strB[12] = "good byyyye\n";
 

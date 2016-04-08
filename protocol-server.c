@@ -534,6 +534,10 @@ static void async_on_data(server_pt *p_server)
         protocol->on_data((*p_server), sockfd);
         // release the handle
         (*p_server)->busy[sockfd] = 0;
+#ifndef SET_TIMEOUT
+        if((*p_server)->protocol_map[sockfd]->service !=  timer_protocol_name)
+            reactor_close(_reactor_(*p_server), sockfd);
+#endif
         return;
     }
     /* we didn't get the handle, reschedule - but only if the connection
@@ -579,6 +583,7 @@ static void srv_cycle_core(server_pt server)
         idle_performed = 1;
     } else
         idle_performed = 0;
+#ifdef SET_TIMEOUT
     /* timeout + local close management */
     if (server->last_to != _reactor_(server)->last_tick) {
         /* We use the delta with fuzzy logic (only after the first second) */
@@ -603,6 +608,7 @@ static void srv_cycle_core(server_pt server)
         /* ready for next call */
         server->last_to = _reactor_(server)->last_tick;
     }
+#endif
     if (server->run &&
         Async.run(server->async,
                   (void (*)(void *)) srv_cycle_core, server)) {

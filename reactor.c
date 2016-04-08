@@ -164,11 +164,9 @@ int reactor_review(struct Reactor *reactor)
 
     /* set the last tick */
     time(&reactor->last_tick);
-
     /* wait for events and handle them */
     int active_count = _WAIT_FOR_EVENTS_;
     if (active_count < 0) return -1;
-
     if (active_count > 0) {
         for (int i = 0; i < active_count; i++) {
             if (_EVENTERROR_(i)) {
