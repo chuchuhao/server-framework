@@ -536,7 +536,6 @@ static void async_timeout(server_pt *p_server)
             (*p_server)->idle[sockfd] += (*p_server)->idle[sockfd] ? 0 : (unsigned char)tick_now;
         }
         else {
-			fprintf(stderr, "should here\n");
             if ( (*p_server)->protocol_map[sockfd] &&
                  (*p_server)->protocol_map[sockfd]->ping)
                 (*p_server)->protocol_map[sockfd]->ping((*p_server), sockfd);
