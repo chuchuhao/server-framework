@@ -572,7 +572,9 @@ static void async_on_data(server_pt *p_server)
         protocol->on_data((*p_server), sockfd);
         // release the handle
         (*p_server)->busy[sockfd] = 0;
-        
+#ifndef SET_TIMEOUT
+		 reactor_close(_reactor_(*p_server), sockfd); 
+#endif
         return;
     }
     /* we didn't get the handle, reschedule - but only if the connection

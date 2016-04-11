@@ -52,8 +52,7 @@ struct Async {
     /** the task queue - MUST be first in the struct */
     pthread_mutex_t lock;              /**< a mutex for data integrity */
     struct AsyncTask * volatile tasks;  /**< active tasks */
-    struct AsyncTask * volatile pool;   /**< a task node pool */
-    struct AsyncTask ** volatile pos;   /**< the position for new tasks */
+    struct AsyncTask * volatile tail;   /**< a task node pool */
 
     /** The pipe used for thread wakeup */
     struct {
@@ -74,32 +73,25 @@ struct Async {
 
 static int async_run(async_p async, void (*task)(void *), void *arg)
 {
-    struct AsyncTask *c;  /* the container, storing the task */
+    struct AsyncTask *c, *tail, *next;  /* the container, storing the task */
 
     if (!async || !task) return -1;
-
-    pthread_mutex_lock(&(async->lock));
-    /* get a container from the pool of grab a new container */
-    if (async->pool) {
-        c = async->pool;
-        async->pool = async->pool->next;
-    } else {
-        c = malloc(sizeof(*c));
-        if (!c) {
-            pthread_mutex_unlock(&async->lock);
-            return -1;
-        }
-    }
+    c = malloc(sizeof(*c));
     c->next = NULL;
     c->task = task;
     c->arg = arg;
-    if (async->tasks) {
-        *(async->pos) = c;
-    } else {
-        async->tasks = c;
+    while(1) {
+        tail = async->tail;
+        next = tail->next;
+        if ( tail == async->tail ) {
+            if ( next == NULL ) {
+                if ( __sync_bool_compare_and_swap( &(async->tail->next), next, c))
+					break;
+            } else {
+                __sync_bool_compare_and_swap( &(async->tail), tail, next);
+            }
+		}
     }
-    async->pos = &(c->next);
-    pthread_mutex_unlock(&async->lock);
     /* wake up any sleeping threads
      * any activated threads will ask to require the mutex
      * as soon as we write.
@@ -113,21 +105,31 @@ static int async_run(async_p async, void (*task)(void *), void *arg)
 /** Performs all the existing tasks in the queue. */
 static void perform_tasks(async_p async)
 {
-    struct AsyncTask *c = NULL;  /* c == container, will store the task */
+    struct AsyncTask *c = NULL, *head, *tail, *next;  /* c == container, will store the task */
     do {
-        /* grab a task from the queue. */
-        pthread_mutex_lock(&(async->lock));
-        /* move the old task container to the pool. */
-        if (c) {
-            c->next = async->pool;
-            async->pool = c;
+        while(1) {
+            head = async->tasks;
+            tail = async->tail;
+			if ( async->tasks == NULL ) {
+				c = NULL;
+				break;
+			}
+			next = head->next;
+			if ( head == async->tasks ) {
+				if ( head == tail ) {
+					if ( next == NULL ) {
+						c = NULL;
+						break;
+					}
+					__sync_bool_compare_and_swap(&(async->tail), tail, next);
+				} else {
+					c = next;
+					if ( __sync_bool_compare_and_swap(&(async->tasks), head, next))
+						break;
+				}
+			}
         }
-        c = async->tasks;
-        if (c) {
-            /* move the queue forward. */
-            async->tasks = async->tasks->next;
-        }
-        pthread_mutex_unlock(&(async->lock));
+		if ( c && head ) free(head);
         /* perform the task */
         if (c) c->task(c->arg);
     } while (c);
@@ -193,22 +195,6 @@ static void async_finish(async_p async)
 static void async_destroy(async_p async)
 {
     pthread_mutex_lock(&async->lock);
-    struct AsyncTask *to_free;
-    async->pos = NULL;
-    /* free all tasks */
-    struct AsyncTask *pos = async->tasks;
-    while ((to_free = pos)) {
-        pos = pos->next;
-        free(to_free);
-    }
-    async->tasks = NULL;
-    /* free task pool */
-    pos = async->pool;
-    while ((to_free = pos)) {
-        pos = pos->next;
-        free(to_free);
-    }
-    async->pool = NULL;
     /* close pipe */
     if (async->pipe.in) {
         close(async->pipe.in);
@@ -226,8 +212,10 @@ static void async_destroy(async_p async)
 static async_p async_create(int threads)
 {
     async_p async = malloc(sizeof(*async) + (threads * sizeof(pthread_t)));
-    async->tasks = NULL;
-    async->pool = NULL;
+    struct AsyncTask *c = malloc(sizeof(*c));
+	if (!c) return NULL;
+	c->next = NULL;
+	async->tasks = async->tail = c;
     async->pipe.in = 0;
     async->pipe.out = 0;
     if (pthread_mutex_init(&(async->lock), NULL)) {
