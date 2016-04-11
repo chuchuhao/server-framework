@@ -487,6 +487,40 @@ static int set_to_busy(struct Server *server, int sockfd)
     return 1;
 }
 
+/* make timeout check asynchronize */
+static void async_timeout(server_pt *p_server)
+{
+    if (!(*p_server)) return;
+    int sockfd = p_server - (*p_server)->server_map;
+    
+    time_t tick_now;
+    time(&tick_now);
+    
+	if ( (*p_server)->protocol_map[sockfd] &&
+         fcntl(sockfd, F_GETFL) <0 && errno == EBADF) {
+        reactor_close(_reactor_(*p_server), sockfd);
+        return;
+    }
+    
+    if ( (*p_server)->tout[sockfd] ) {
+		if ( (*p_server)->idle[sockfd] == 0 ||
+             (*p_server)->tout[sockfd] > ( (unsigned char)tick_now) - (*p_server)->idle[sockfd] ) {
+            (*p_server)->idle[sockfd] += (*p_server)->idle[sockfd] ? 0 : (unsigned char)tick_now;
+        }
+        else {
+            if ( (*p_server)->protocol_map[sockfd] &&
+                 (*p_server)->protocol_map[sockfd]->ping)
+                (*p_server)->protocol_map[sockfd]->ping((*p_server), sockfd);
+            else if (!(*p_server)->busy[sockfd] || (*p_server)->idle[sockfd] == 255 )
+                reactor_close(_reactor_(*p_server), sockfd);
+                return;
+        }
+		Async.run((*p_server)->async,
+                   (void (*)(void *)) async_timeout, p_server);
+    }
+    return ;
+}
+
 /* accepts new connections */
 static void accept_async(server_pt server)
 {
@@ -514,40 +548,12 @@ static void accept_async(server_pt server)
         }
         /* attach the new client (performs on_close if needed) */
         srv_attach(server, client, server->settings->protocol);
+        // async check timeout
+        Async.run(server->async,
+                (void (*)(void *)) async_timeout, &(server->server_map[client]));
     }
 }
 
-/* make timeout check asynchronize */
-static void async_timeout(server_pt *p_server)
-{
-    if (!(*p_server)) return;
-    int sockfd = p_server - (*p_server)->server_map;
-    
-    time_t tick_now;
-    time(&tick_now);
-    if ( (*p_server)->protocol_map[sockfd] && 
-         fcntl(sockfd, F_GETFL) <0 && errno == EBADF) {
-        reactor_close(_reactor_(*p_server), sockfd);
-        return;
-    }
-    if ( (*p_server)->tout[sockfd] ) {
-		if ( (*p_server)->idle[sockfd] == 0 || 
-             (*p_server)->tout[sockfd] > ( (unsigned char)tick_now) - (*p_server)->idle[sockfd] ) {
-            (*p_server)->idle[sockfd] += (*p_server)->idle[sockfd] ? 0 : (unsigned char)tick_now;
-        }
-        else {
-            if ( (*p_server)->protocol_map[sockfd] &&
-                 (*p_server)->protocol_map[sockfd]->ping)
-                (*p_server)->protocol_map[sockfd]->ping((*p_server), sockfd);
-            else if (!(*p_server)->busy[sockfd] || (*p_server)->idle[sockfd] == 255 )
-                reactor_close(_reactor_(*p_server), sockfd);
-                return;
-        }
-		Async.run((*p_server)->async,
-                   (void (*)(void *)) async_timeout, p_server);
-    }
-    return ;
-}
 
 /* make sure that the on_data callback isn't overlapping a previous on_data */
 static void async_on_data(server_pt *p_server)
@@ -567,11 +573,6 @@ static void async_on_data(server_pt *p_server)
         // release the handle
         (*p_server)->busy[sockfd] = 0;
         
-        // async check timeout
-        if((*p_server)->protocol_map[sockfd]->service !=  timer_protocol_name
-            && (*p_server)->protocol_map[sockfd])
-            Async.run((*p_server)->async,
-                (void (*)(void *)) async_timeout, p_server);
         return;
     }
     /* we didn't get the handle, reschedule - but only if the connection
@@ -619,13 +620,6 @@ static void srv_cycle_core(server_pt server)
         idle_performed = 0;
     /* timeout + local close management */
     if (server->last_to != _reactor_(server)->last_tick) {
-        /* We use the delta with fuzzy logic (only after the first second) */
-        for (long i = 3; i <= _reactor_(server)->maxfd; i++) {
-            if (server->protocol_map[i] && fcntl(i, F_GETFL) < 0 &&
-                errno == EBADF) {
-                reactor_close(_reactor_(server), i);
-            }
-        }
         /* ready for next call */
         server->last_to = _reactor_(server)->last_tick;
     }
